@@ -1,33 +1,42 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { Site, SiteFile } from '../types';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { ArrowLeft, AlertTriangle } from 'lucide-react';
-import Button from '../components/Button';
+
+// Utility to escape HTML for use in attributes or text nodes if necessary (e.g. title)
+function escapeHtml(unsafe: string): string {
+    return unsafe
+         .replace(/&/g, "&amp;")
+         .replace(/</g, "&lt;")
+         .replace(/>/g, "&gt;")
+         .replace(/"/g, "&quot;")
+         .replace(/'/g, "&#039;");
+}
 
 const HostedSitePreviewPage: React.FC = () => {
   const { siteSlug } = useParams<{ siteSlug: string }>();
   const [site, setSite] = useState<Site | null>(null);
   const [files, setFiles] = useState<Record<string, string>>({}); // { 'index.html': content, ... }
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [iframeSrcDoc, setIframeSrcDoc] = useState<string>('');
+  const [initialLoading, setInitialLoading] = useState(true); // For fetching site/file data
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  
+  const initialSrcDoc = '<html><body style="font-family: sans-serif; color: #333; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;"><p>Initializing preview...</p></body></html>';
+  const [iframeSrcDoc, setIframeSrcDoc] = useState<string>(initialSrcDoc);
 
   const fetchSiteData = useCallback(async () => {
     if (!siteSlug) {
-      setError("Site slug is missing.");
-      setLoading(false);
+      setFetchError("Site slug is missing.");
+      setInitialLoading(false);
       return;
     }
-    setLoading(true);
-    setError(null);
+    setInitialLoading(true);
+    setFetchError(null);
     try {
-      // Fetch site details by slug (publicly accessible based on RLS)
       const { data: siteData, error: siteError } = await supabase
         .from('hosted_sites')
-        .select('id, site_name, public_link_slug') // Select only needed public fields
+        .select('id, site_name, public_link_slug')
         .eq('public_link_slug', siteSlug)
         .single();
 
@@ -36,7 +45,6 @@ const HostedSitePreviewPage: React.FC = () => {
       }
       setSite(siteData as Site);
 
-      // Fetch files for this site (publicly accessible based on RLS)
       const { data: filesData, error: filesError } = await supabase
         .from('site_files')
         .select('file_name, content')
@@ -51,10 +59,12 @@ const HostedSitePreviewPage: React.FC = () => {
       setFiles(filesMap);
 
     } catch (err: any) {
-      setError(err.message || 'Failed to load site data.');
+      setFetchError(err.message || 'Failed to load site data.');
+      setSite(null); // Ensure site is null on error
+      setFiles({});   // Ensure files are empty on error
       console.error(err);
     } finally {
-      setLoading(false);
+      setInitialLoading(false);
     }
   }, [siteSlug]);
 
@@ -63,88 +73,77 @@ const HostedSitePreviewPage: React.FC = () => {
   }, [fetchSiteData]);
   
   useEffect(() => {
-    if (files['index.html']) {
-      const htmlContent = files['index.html'] || '<p>index.html not found.</p>';
-      const cssContent = files['styles.css'] || '';
-      const jsContent = files['script.js'] || '';
+    if (initialLoading) {
+      // Don't construct srcDoc while initial site data is loading
+      // The iframe will show its initial "Initializing preview..." or the spinner will be visible
+      return;
+    }
+
+    if (fetchError) {
+      // Critical error fetching site data
+      setIframeSrcDoc(`<html><body style="font-family: sans-serif; color: #333; text-align: center; padding-top: 2rem; margin: 0;"><h1>Error Loading Site</h1><p>${escapeHtml(fetchError)}</p><p>Please check the URL or try again later.</p></body></html>`);
+      return;
+    }
+
+    if (Object.keys(files).length > 0 && files['index.html']) {
+      const htmlFileContent = files['index.html'];
+      const cssFileContent = files['styles.css'] || '';
+      const jsFileContent = files['script.js'] || '';
+      const siteTitle = site?.site_name || 'Hosted Site';
 
       // Construct srcDoc. This method embeds CSS and JS directly.
-      // Assumes index.html links to styles.css and script.js with relative paths.
-      // More robust parsing would be needed to handle arbitrary <link> and <script> tags.
-      // For this example, we directly embed.
+      // The user's full index.html (htmlFileContent) is placed in the body.
+      // Any <link> or <script> tags in their index.html pointing to local files (like styles.css, script.js)
+      // will not resolve in srcDoc, but the content is directly injected here.
       const fullHtml = `
         <!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>${site?.site_name || 'Preview'}</title>
-            <style>
-              ${cssContent}
+            <title>${escapeHtml(siteTitle)}</title>
+            <style type="text/css">
+              ${cssFileContent}
             </style>
         </head>
         <body>
-            ${htmlContent}
-            <script>
-              ${jsContent}
+            ${htmlFileContent}
+            <script type="text/javascript">
+              ${jsFileContent}
             </script>
         </body>
         </html>
       `;
       setIframeSrcDoc(fullHtml);
-    } else if (!loading && Object.keys(files).length > 0) {
+    } else if (Object.keys(files).length > 0 && !files['index.html']) {
         // Files loaded, but no index.html
-        setIframeSrcDoc('<html><body><h1>Error: index.html not found for this site.</h1></body></html>');
+        setIframeSrcDoc('<html><body style="font-family: sans-serif; color: #333; text-align: center; padding-top: 2rem; margin: 0;"><h1>Preview Error</h1><p><strong>index.html</strong> not found for this site.</p><p>Please ensure an index.html file exists in your site files.</p></body></html>');
+    } else if (!fetchError) {
+        // No files, no error, potentially an empty site or just initialized
+        setIframeSrcDoc('<html><body style="font-family: sans-serif; color: #333; text-align: center; padding-top: 2rem; margin: 0;"><p>Site content is not available or is empty.</p></body></html>');
     }
 
-  }, [files, site, loading]);
+  }, [files, site, initialLoading, fetchError]);
 
 
-  if (loading) {
+  if (initialLoading) {
     return (
-      <div className="fixed inset-0 flex flex-col items-center justify-center bg-gray-900 z-50">
-        <LoadingSpinner size={12} />
-        <p className="mt-4 text-lg text-gray-300">Loading Live Preview...</p>
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-white z-[9999]">
+        <LoadingSpinner size={12} color="text-gray-400" />
+        <p className="mt-3 text-sm text-gray-500">Loading Site...</p>
       </div>
     );
   }
 
-  if (error) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-900 p-4">
-        <div className="bg-gray-800 p-8 rounded-lg shadow-xl text-center">
-            <AlertTriangle size={48} className="mx-auto text-red-500 mb-4" />
-            <h2 className="text-2xl font-semibold text-red-400 mb-2">Error Loading Preview</h2>
-            <p className="text-gray-300 mb-6">{error}</p>
-            <Link to="/dashboard">
-                <Button variant="primary" leftIcon={<ArrowLeft size={18}/>}>
-                    Back to Dashboard
-                </Button>
-            </Link>
-        </div>
-      </div>
-    );
-  }
-
+  // If not initialLoading, always render the iframe.
+  // The iframeSrcDoc will contain either the site content or an appropriate error/status message.
   return (
-    <div className="h-screen w-screen flex flex-col bg-gray-900 fixed inset-0">
-        <div className="bg-gray-800 p-2 flex justify-between items-center shadow-md">
-            <span className="text-lg font-semibold text-gray-100 ml-2">
-                Live Preview: {site?.site_name || 'Loading...'}
-            </span>
-            <Link to={site ? `/server/${site.id}` : "/dashboard"}>
-                 <Button variant="ghost" size="sm" leftIcon={<ArrowLeft size={16}/>}>
-                    Back to Editor
-                </Button>
-            </Link>
-        </div>
-      <iframe
-        srcDoc={iframeSrcDoc}
-        title="Hosted Site Preview"
-        className="w-full h-full border-0 flex-grow"
-        sandbox="allow-scripts allow-same-origin allow-popups allow-forms" // Security sandbox
-      />
-    </div>
+    <iframe
+      srcDoc={iframeSrcDoc}
+      title={site?.site_name || 'Hosted Site'} // For accessibility, not visibly displayed by default
+      className="w-screen h-screen border-0 fixed inset-0 bg-white" // bg-white for clean loading
+      sandbox="allow-scripts allow-same-origin allow-popups allow-forms" // Security sandbox
+    />
   );
 };
 
