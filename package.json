@@ -1,5 +1,5 @@
 {
-  "name": "quickhost:-idea-to-live-site",
+  "name": "boongle-suite",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,13 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-router-dom": "^7.6.2",
-    "@supabase/supabase-js": "^2.50.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "prismjs": "^1.30.0",
-    "lucide-react": "^0.514.0",
-    "react-simple-code-editor": "^0.14.1"
+    "@supabase/supabase-js": "^2.50.0",
+    "react-router-dom": "^7.6.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
